@@ -438,12 +438,13 @@ def fetch_chain(host: str, port: int = 443) -> tuple[
     # Certs the server sent that are NOT on the valid path
     extra = [c for c in server_certs if c.subject.public_bytes() not in visited]
 
-    # Detect wrong order and record server's original order of path certs
+    # Detect wrong order — compare only certs the server actually sent (exclude trust-store additions)
     path_subjects = {c.subject.public_bytes() for c in ordered}
     server_path_order = [c.subject.public_bytes() for c in server_certs
                          if c.subject.public_bytes() in path_subjects]
     our_path_order = [c.subject.public_bytes() for c in ordered
-                      if c.subject.public_bytes() in path_subjects]
+                      if c.subject.public_bytes() in path_subjects
+                      and c.subject.public_bytes() in server_subjects]
     order_wrong = server_path_order != our_path_order
     server_path_cns = [cert_cn(by_subject[s]) for s in server_path_order if s in by_subject]
 
@@ -799,7 +800,7 @@ def render(analysis: dict, verified_ok: bool) -> None:
             console.print(f"  • [yellow]Incorrect order[/yellow] — server sent chain certs out of sequence (tool reordered for display)")
             if server_path_cns:
                 server_str = " → ".join(_esc(cn) for cn in server_path_cns)
-                correct_cns = [entry["cn"] for entry in certs]
+                correct_cns = [entry["cn"] for entry in certs if entry["from_server"]]
                 correct_str = " → ".join(_esc(cn) for cn in correct_cns)
                 console.print(f"    [dim]Server sent:   {server_str}[/dim]")
                 console.print(f"    [dim]Correct order: [green]{correct_str}[/green][/dim]")
