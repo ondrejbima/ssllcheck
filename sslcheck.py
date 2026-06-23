@@ -787,7 +787,25 @@ def render(analysis: dict, verified_ok: bool) -> None:
         if trust_failure_reason:
             console.print(f"  [red]Reason:[/red] {_esc(trust_failure_reason)}")
         elif analysis.get("verify_error"):
-            console.print(f"  [red]Error:[/red] {_esc(analysis['verify_error'])}")
+            err = analysis['verify_error']
+            # Clean up SSL error message: extract just the meaningful part
+            if "certificate verify failed:" in err:
+                err = err.split("certificate verify failed:")[1].strip()
+                # Remove the (_ssl.c:NNN) suffix
+                if "(_ssl.c:" in err:
+                    err = err.split("(_ssl.c:")[0].strip()
+            console.print(f"  [red]Error:[/red] {_esc(err)}")
+
+            # If hostname mismatch, show what domains the cert is valid for
+            if "Hostname mismatch" in err and certs:
+                leaf_entry = certs[0]
+                valid_for = set()
+                if leaf_entry.get("cn"):
+                    valid_for.add(leaf_entry["cn"])
+                valid_for.update(leaf_entry.get("sans", []))
+                if valid_for:
+                    domains_str = ", ".join(sorted(_esc(d) for d in valid_for))
+                    console.print(f"  [dim]Certificate is valid for:[/dim] {domains_str}")
     elif not has_revoked:
         console.print("[green]✓ Certificate verifies successfully against certifi trust store[/green]")
 
