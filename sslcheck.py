@@ -369,15 +369,15 @@ def _fetch_server_chain(host: str, port: int) -> list[bytes]:
     return _parse_pem_blocks(output)
 
 
-def _verify_tls(host: str, port: int) -> bool:
-    """Return True if the certificate chain verifies against certifi trust store."""
+def _verify_tls(host: str, port: int) -> tuple[bool, str | None]:
+    """Return (verified, reason) where reason is None if verified, else human-readable error."""
     ctx = ssl.create_default_context(cafile=certifi.where())
     try:
         with socket.create_connection((host, port), timeout=10) as sock:
             with ctx.wrap_socket(sock, server_hostname=host):
-                return True
-    except ssl.SSLCertVerificationError:
-        return False
+                return True, None
+    except ssl.SSLCertVerificationError as e:
+        return False, str(e)
 
 
 def fetch_chain(host: str, port: int = 443) -> tuple[
@@ -389,16 +389,18 @@ def fetch_chain(host: str, port: int = 443) -> tuple[
     list[str],
     list[x509.Certificate] | None,
     list[str] | None,
+    str | None,
 ]:
     """
     Returns (ordered, verified_ok, server_subjects, extra, order_wrong,
-             server_path_cns, alt_chain, alt_chain_sources).
+             server_path_cns, alt_chain, alt_chain_sources, verify_error).
     ordered[0] is the leaf certificate.
     server_subjects: subject DER bytes of certs actually sent by the server.
     extra: server certs not on the valid path.
     order_wrong: True if server sent path certs in wrong order.
     server_path_cns: CNs of path certs in server-sent order (for wrong-order display).
     alt_chain / alt_chain_sources: alternative trusted path via AIA, or None.
+    verify_error: reason for TLS verification failure, or None if verified OK.
     """
     server_pem_blocks = _fetch_server_chain(host, port)
     if not server_pem_blocks:
@@ -448,7 +450,7 @@ def fetch_chain(host: str, port: int = 443) -> tuple[
     order_wrong = server_path_order != our_path_order
     server_path_cns = [cert_cn(by_subject[s]) for s in server_path_order if s in by_subject]
 
-    verified_ok = _verify_tls(host, port)
+    verified_ok, verify_error = _verify_tls(host, port)
 
     # AIA chain discovery when chain ends at untrusted self-signed root
     alt_chain: list[x509.Certificate] | None = None
@@ -459,7 +461,7 @@ def fetch_chain(host: str, port: int = 443) -> tuple[
         if aia_result:
             alt_chain, alt_chain_sources = aia_result
 
-    return ordered, verified_ok, server_subjects, extra, order_wrong, server_path_cns, alt_chain, alt_chain_sources
+    return ordered, verified_ok, server_subjects, extra, order_wrong, server_path_cns, alt_chain, alt_chain_sources, verify_error
 
 
 # ---------------------------------------------------------------------------
@@ -475,6 +477,7 @@ def analyse_chain(
     server_path_cns: list[str],
     alt_chain: list[x509.Certificate] | None = None,
     alt_chain_sources: list[str] | None = None,
+    verify_error: str | None = None,
 ) -> dict:
     """
     Returns structured analysis of the chain.
@@ -484,6 +487,7 @@ def analyse_chain(
     order_wrong: server sent path certs in wrong order.
     server_path_cns: CNs of path certs in server-sent order.
     alt_chain / alt_chain_sources: alternative path from AIA discovery.
+    verify_error: TLS verification error message, if any.
     """
 
     result = {
@@ -497,6 +501,7 @@ def analyse_chain(
         "contains_anchor": False,
         "anchor_not_trusted": False,
         "trust_failure_reason": None,
+        "verify_error": verify_error,
         "alt_chain_certs": [],
         "alt_chain_trusted": False,
     }
@@ -781,6 +786,8 @@ def render(analysis: dict, verified_ok: bool) -> None:
         console.print("[red]✗ Certificate verification FAILED — browser will show a warning[/red]")
         if trust_failure_reason:
             console.print(f"  [red]Reason:[/red] {_esc(trust_failure_reason)}")
+        elif analysis.get("verify_error"):
+            console.print(f"  [red]Error:[/red] {_esc(analysis['verify_error'])}")
     elif not has_revoked:
         console.print("[green]✓ Certificate verifies successfully against certifi trust store[/green]")
 
@@ -875,7 +882,7 @@ def main() -> None:
 
     console.print(f"\n[dim]Connecting to {host}:{port} …[/dim]")
     try:
-        certs, verified_ok, server_subjects, extra, order_wrong, server_path_cns, alt_chain, alt_chain_sources = fetch_chain(host, port)
+        certs, verified_ok, server_subjects, extra, order_wrong, server_path_cns, alt_chain, alt_chain_sources, verify_error = fetch_chain(host, port)
     except socket.timeout:
         console.print(f"[red]Connection timed out: {host}:{port}[/red]")
         sys.exit(2)
@@ -892,7 +899,7 @@ def main() -> None:
 
     analysis = analyse_chain(
         certs, host, server_subjects, extra, order_wrong,
-        server_path_cns, alt_chain, alt_chain_sources,
+        server_path_cns, alt_chain, alt_chain_sources, verify_error,
     )
     render(analysis, verified_ok)
 
